@@ -1,0 +1,6 @@
+fpdf
+pandas
+python-docx
+markdown2
+pdfkit
+python-pptx
