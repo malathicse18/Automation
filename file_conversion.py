@@ -2,38 +2,37 @@ import argparse
 import os
 import platform
 import subprocess
+import logging
 from fpdf import FPDF
-import pandas as pd
 from docx import Document
-from markdown2 import markdown
-import pdfkit
-from pptx import Presentation
+from datetime import datetime
+import sys
+
+def setup_logging(log_file):
+    logging.basicConfig(filename=log_file, level=logging.INFO,
+                        format='%(asctime)s - %(levelname)s - %(message)s')
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="File Conversion Task",
-        epilog="""
-Available conversions:
-  - .txt   →  .pdf
-  - .docx  →  .pdf
-  - .md    →  .html
-  - .html  →  .pdf
-  - .xlsx  →  .csv
-  - .pptx  →  .pdf
+        epilog="""Available conversions:
+- .txt  →  .pdf
+- .docx →  .pdf
 """,
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument("--dir", required=True, help="Directory containing files to convert")
-    parser.add_argument("--ext", required=True, help="File extension to look for")
-    parser.add_argument("--format", required=True, help="Target conversion format")
+    parser.add_argument("--ext", required=True, help="File extension to look for (e.g., .txt, .docx)")
+    parser.add_argument("--format", required=True, help="Target conversion format (e.g., .pdf)")
     parser.add_argument("--frequency", type=int, required=True, help="Frequency of the task")
     parser.add_argument("--unit", choices=["minute", "hour", "day"], required=True, help="Unit of time")
+    parser.add_argument("--scheduled", action='store_true', help="Indicates if the script is running as a scheduled task")
     return parser.parse_args()
 
 def check_files(directory, extension):
     files = [f for f in os.listdir(directory) if f.endswith(extension)]
     if not files:
-        print(f"❌ No files with extension {extension} found in {directory}")
+        logging.info(f"No files with extension {extension} found in {directory}")
     return files
 
 def txt_to_pdf(txt_file, pdf_file):
@@ -46,9 +45,9 @@ def txt_to_pdf(txt_file, pdf_file):
             for line in file:
                 pdf.multi_cell(0, 10, line)
         pdf.output(pdf_file)
-        print(f"✅ Converted {txt_file} → {pdf_file}")
+        logging.info(f"Converted {txt_file} → {pdf_file}")
     except Exception as e:
-        print(f"❌ Error converting {txt_file} to PDF: {e}")
+        logging.error(f"Error converting {txt_file} to PDF: {e}")
 
 def docx_to_pdf(docx_file, pdf_file):
     try:
@@ -60,9 +59,9 @@ def docx_to_pdf(docx_file, pdf_file):
         for para in doc.paragraphs:
             pdf.multi_cell(0, 10, para.text)
         pdf.output(pdf_file)
-        print(f"✅ Converted {docx_file} → {pdf_file}")
+        logging.info(f"Converted {docx_file} → {pdf_file}")
     except Exception as e:
-        print(f"❌ Error converting {docx_file} to PDF: {e}")
+        logging.error(f"Error converting {docx_file} to PDF: {e}")
 
 def convert_file(file_path, target_format):
     base, ext = os.path.splitext(file_path)
@@ -73,33 +72,43 @@ def convert_file(file_path, target_format):
     if (ext, target_format) in conversions:
         conversions[(ext, target_format)](file_path, base + target_format)
     else:
-        print(f"❌ Conversion from {ext} to {target_format} is not supported.")
+        logging.warning(f"Conversion from {ext} to {target_format} is not supported.")
 
 def schedule_task_windows(script_path, directory, extension, target_format, frequency, unit):
     task_name = "FileConversionTask"
-    command = f'python "{script_path}" --dir "{directory}" --ext "{extension}" --format "{target_format}"'
+    python_command = f'python {script_path} --dir \\"{directory}\\" --ext \\"{extension}\\" --format \\"{target_format}\\" --scheduled'
     schedule_unit = {"minute": "MINUTE", "hour": "HOURLY", "day": "DAILY"}
     schedule_command = (
-        f'schtasks /create /tn "{task_name}" /tr "{command}" '
+        f'schtasks /create /tn "{task_name}" /tr "{python_command}" '
         f'/sc {schedule_unit[unit]} /mo {frequency} /f'
     )
     try:
         subprocess.run(schedule_command, shell=True, check=True)
-        print(f"✅ Scheduled task '{task_name}' in Windows every {frequency} {unit}(s).")
+        logging.info(f"Scheduled task '{task_name}' in Windows every {frequency} {unit}(s).")
     except subprocess.CalledProcessError as e:
-        print(f"❌ Failed to schedule task in Windows: {e}")
+        logging.error(f"Failed to schedule task in Windows: {e}")
 
 def schedule_task_linux(script_path, directory, extension, target_format, frequency, unit):
     cron_time = f"*/{frequency} * * * *" if unit == "minute" else f"0 */{frequency} * * *" if unit == "hour" else f"0 0 */{frequency} * *"
-    cron_job = f'{cron_time} python3 {script_path} --dir "{directory}" --ext "{extension}" --format "{target_format}"'
-    subprocess.run(f'(crontab -l; echo "{cron_job}") | crontab -', shell=True, executable='/bin/bash')
-    print(f"✅ Scheduled task in Linux every {frequency} {unit}(s).")
+    cron_job = f'{cron_time} python3 {script_path} --dir "{directory}" --ext "{extension}" --format "{target_format}" --scheduled'
+    try:
+        subprocess.run(f'(crontab -l; echo "{cron_job}") | crontab -', shell=True, executable='/bin/bash')
+        logging.info(f"Scheduled task in Linux every {frequency} {unit}(s).")
+    except Exception as e:
+        logging.error(f"Failed to schedule task in Linux: {e}")
 
 def main():
     args = parse_arguments()
-    files = check_files(args.dir, args.ext)
-    for file in files:
-        convert_file(os.path.join(args.dir, file), args.format)
+    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"file_conversion_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    setup_logging(log_file)
+    logging.info("Script started.")
+
+    if args.scheduled:
+        files = check_files(args.dir, args.ext)
+        for file in files:
+            convert_file(os.path.join(args.dir, file), args.format)
+    else:
+        logging.info("Script ran manually, scheduling task.")
 
     script_path = os.path.abspath(__file__)
     if platform.system() == "Windows":
@@ -107,7 +116,8 @@ def main():
     elif platform.system() == "Linux":
         schedule_task_linux(script_path, args.dir, args.ext, args.format, args.frequency, args.unit)
     else:
-        print("❌ Unsupported operating system.")
+        logging.warning("Unsupported operating system.")
+    logging.info("Script finished.")
 
 if __name__ == "__main__":
     main()
